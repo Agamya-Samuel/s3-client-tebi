@@ -20,6 +20,7 @@ import {
 	Trash2,
 	Globe2,
 	Lock,
+	Link,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -59,6 +60,8 @@ interface StorageExplorerProps {
 	initialPath?: string;
 }
 
+const MAX_PATH_LIMIT = 4;
+
 const FileIcon = ({
 	fileName,
 	className,
@@ -88,6 +91,8 @@ function ItemMenu({
 	isDeletingItem,
 }: ItemMenuProps) {
 	const [isUpdatingPermission, setIsUpdatingPermission] = useState(false);
+	const [isCopying, setIsCopying] = useState(false);
+	const { toast } = useToast();
 
 	const handlePermissionChange = async () => {
 		setIsUpdatingPermission(true);
@@ -95,6 +100,35 @@ function ItemMenu({
 			await onPermissionChange(item, !item.isPublic);
 		} finally {
 			setIsUpdatingPermission(false);
+		}
+	};
+
+	const handleCopyUrl = async () => {
+		setIsCopying(true);
+		try {
+			let url;
+			if (item.Type === 'folder') {
+				// For folders, copy the path URL
+				const pathSegments = item.Key.split('/').filter(Boolean);
+				url = `/storage/${pathSegments.join('/')}`;
+			} else {
+				// For files, get the appropriate URL (public or private)
+				url = await storageActions.getFileUrl(item.Key);
+			}
+
+			await navigator.clipboard.writeText(url);
+			toast({
+				title: 'Success',
+				description: 'URL copied to clipboard',
+			});
+		} catch (error) {
+			toast({
+				title: 'Error',
+				description: 'Failed to copy URL',
+				variant: 'destructive',
+			});
+		} finally {
+			setIsCopying(false);
 		}
 	};
 
@@ -106,10 +140,14 @@ function ItemMenu({
 					size="icon"
 					className="hover:bg-blue-100 hover:text-blue-700"
 					disabled={
-						isDeletingItem === item.Key || isUpdatingPermission
+						isDeletingItem === item.Key ||
+						isUpdatingPermission ||
+						isCopying
 					}
 				>
-					{isDeletingItem === item.Key || isUpdatingPermission ? (
+					{isDeletingItem === item.Key ||
+					isUpdatingPermission ||
+					isCopying ? (
 						<Loader2 className="h-4 w-4 animate-spin text-blue-600" />
 					) : (
 						<MoreVertical className="h-4 w-4 text-blue-600" />
@@ -148,6 +186,17 @@ function ItemMenu({
 						<DropdownMenuSeparator />
 					</>
 				)}
+				<DropdownMenuItem
+					onClick={async (e) => {
+						e.stopPropagation();
+						await handleCopyUrl();
+					}}
+					className="text-blue-600"
+					disabled={isCopying}
+				>
+					<Link className="h-4 w-4 mr-2" />
+					Copy URL
+				</DropdownMenuItem>
 				<DropdownMenuItem
 					onClick={(e) => {
 						e.stopPropagation();
@@ -528,95 +577,86 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	};
 
 	const renderBreadcrumbs = () => {
-		const segments = currentPath.split('/').filter(Boolean);
-		const showCollapsed = segments.length > 3;
-		const visibleSegments = showCollapsed
-			? [...segments.slice(0, 1), ...segments.slice(-2)]
-			: segments;
+		const pathSegments = currentPath.split('/').filter(Boolean);
+		const isPathTruncated = pathSegments.length > MAX_PATH_LIMIT;
+		const displayedSegments = isPathTruncated
+			? pathSegments.slice(pathSegments.length - MAX_PATH_LIMIT)
+			: pathSegments;
+		const hiddenSegments = isPathTruncated
+			? pathSegments.slice(0, pathSegments.length - MAX_PATH_LIMIT)
+			: [];
 
 		return (
 			<div className="flex items-center gap-1 text-sm">
 				<Button
 					variant="ghost"
-					size="sm"
-					className="hover:bg-blue-50 hover:text-blue-600"
+					size="icon"
+					className="hover:bg-blue-100 hover:text-blue-700"
 					onClick={() => loadItems('')}
 				>
-					<Home className="h-4 w-4" />
+					<Home className="h-4 w-4 text-blue-600" />
 				</Button>
-				{visibleSegments.map((segment, index) => {
-					const isCollapsedSection = showCollapsed && index === 0;
-					const pathToHere = isCollapsedSection
-						? segments.slice(0, 1).join('/') + '/'
-						: showCollapsed && index > 0
-						? segments.slice(0, -2 + index).join('/') + '/'
-						: segments.slice(0, index + 1).join('/') + '/';
-
-					return (
-						<div key={pathToHere} className="flex items-center">
-							<ChevronRight className="h-4 w-4 text-blue-400" />
-							<Button
-								variant="ghost"
-								size="sm"
-								className="hover:bg-blue-50 hover:text-blue-600"
-								onClick={() => loadItems(pathToHere)}
-							>
-								{segment}
-							</Button>
-							{isCollapsedSection && (
-								<>
-									<ChevronRight className="h-4 w-4 text-blue-400" />
-									<DropdownMenu>
-										<DropdownMenuTrigger asChild>
-											<Button
-												variant="ghost"
-												size="sm"
-												className="px-2 hover:bg-blue-50 hover:text-blue-600"
-											>
-												<span className="text-blue-400">
-													...
-												</span>
-											</Button>
-										</DropdownMenuTrigger>
-										<DropdownMenuContent align="start">
-											{segments
-												.slice(1, -2)
-												.map(
-													(
-														hiddenSegment,
-														hiddenIndex
-													) => {
-														const hiddenPath =
-															segments
-																.slice(
-																	0,
-																	hiddenIndex +
-																		2
-																)
-																.join('/') +
-															'/';
-														return (
-															<DropdownMenuItem
-																key={hiddenPath}
-																onClick={() =>
-																	loadItems(
-																		hiddenPath
-																	)
-																}
-																className="text-blue-600"
-															>
-																{hiddenSegment}
-															</DropdownMenuItem>
-														);
-													}
-												)}
-										</DropdownMenuContent>
-									</DropdownMenu>
-								</>
-							)}
-						</div>
-					);
-				})}
+				{isPathTruncated && (
+					<>
+						<ChevronRight className="h-4 w-4 text-blue-600" />
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button
+									variant="ghost"
+									className="hover:bg-blue-100 hover:text-blue-700 px-2"
+								>
+									<span className="text-blue-600">...</span>
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="start">
+								{hiddenSegments.map((segment, index) => {
+									const pathToHere =
+										pathSegments
+											.slice(0, index + 1)
+											.join('/') + '/';
+									return (
+										<DropdownMenuItem
+											key={pathToHere}
+											onClick={() =>
+												loadItems(pathToHere)
+											}
+											className="text-blue-600"
+										>
+											{segment}
+										</DropdownMenuItem>
+									);
+								})}
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</>
+				)}
+				{displayedSegments.map((segment, index) => (
+					<React.Fragment key={segment}>
+						<ChevronRight className="h-4 w-4 text-blue-600" />
+						<Button
+							variant="ghost"
+							className="hover:bg-blue-100 hover:text-blue-700"
+							onClick={() => {
+								const targetPath = isPathTruncated
+									? pathSegments
+											.slice(
+												0,
+												pathSegments.length -
+													MAX_PATH_LIMIT +
+													index +
+													1
+											)
+											.join('/') + '/'
+									: pathSegments
+											.slice(0, index + 1)
+											.join('/') + '/';
+								loadItems(targetPath);
+							}}
+						>
+							{segment}
+						</Button>
+					</React.Fragment>
+				))}
 			</div>
 		);
 	};
@@ -1116,7 +1156,8 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									<div {...getFolderRootProps()}>
 										<input
 											{...getFolderInputProps()}
-											webkitdirectory=""
+											// @ts-ignore
+											webkitdirectory="true"
 											type="file"
 										/>
 										<DropdownMenuItem
@@ -1132,7 +1173,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 						</div>
 					</div>
 				</div>
-				<div className="flex items-center gap-2">
+				<div className="flex items-center gap-2 w-full border border-blue-200 rounded-lg p-1">
 					{currentPath && (
 						<Button
 							variant="outline"
