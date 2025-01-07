@@ -342,6 +342,11 @@ export async function getFileUrl(key: string): Promise<string> {
 
 export async function renameItem(oldPath: string, newPath: string) {
 	try {
+		// Add validation to prevent folder renaming
+		if (oldPath.endsWith('/')) {
+			throw new Error('Folder renaming is not supported');
+		}
+
 		// Copy the object to the new location
 		await s3Client.send(
 			new CopyObjectCommand({

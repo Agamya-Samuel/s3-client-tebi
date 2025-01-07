@@ -108,9 +108,9 @@ function ItemMenu({
 		try {
 			let url;
 			if (item.Type === 'folder') {
-				// For folders, copy the path URL
+				// For folders, copy the path URL with NEXT_PUBLIC_HOST
 				const pathSegments = item.Key.split('/').filter(Boolean);
-				url = `/storage/${pathSegments.join('/')}`;
+				url = `${process.env.NEXT_PUBLIC_HOST}/storage/${pathSegments.join('/')}`;
 			} else {
 				// For files, get the appropriate URL (public or private)
 				url = await storageActions.getFileUrl(item.Key);
@@ -123,6 +123,7 @@ function ItemMenu({
 				variant: 'success',
 			});
 		} catch (error) {
+			console.error('Error copying URL:', error);
 			toast({
 				title: 'Error',
 				description: 'Failed to copy URL',
@@ -198,16 +199,18 @@ function ItemMenu({
 					<Link className="h-4 w-4 mr-2" />
 					Copy URL
 				</DropdownMenuItem>
-				<DropdownMenuItem
-					onClick={(e) => {
-						e.stopPropagation();
-						onRename(item);
-					}}
-					className="text-blue-600"
-				>
-					<Pencil className="h-4 w-4 mr-2" />
-					Rename
-				</DropdownMenuItem>
+				{item.Type === 'file' && (
+					<DropdownMenuItem
+						onClick={(e) => {
+							e.stopPropagation();
+							onRename(item);
+						}}
+						className="text-blue-600"
+					>
+						<Pencil className="h-4 w-4 mr-2" />
+						Rename
+					</DropdownMenuItem>
+				)}
 				<DropdownMenuItem
 					onClick={(e) => {
 						e.stopPropagation();
