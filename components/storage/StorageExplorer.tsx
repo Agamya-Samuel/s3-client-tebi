@@ -257,6 +257,21 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	const [viewMode, setViewMode] = useState<'grid' | 'list' | 'detail'>(
 		'grid'
 	);
+
+	// Load saved view mode from localStorage after initial render
+	useEffect(() => {
+		const savedMode = localStorage.getItem('storageViewMode');
+		if (savedMode) {
+			setViewMode(savedMode as 'grid' | 'list' | 'detail');
+		}
+	}, []);
+
+	// Create a function to update view mode that also saves to localStorage
+	const updateViewMode = (mode: 'grid' | 'list' | 'detail') => {
+		setViewMode(mode);
+		localStorage.setItem('storageViewMode', mode);
+	};
+
 	const { toast } = useToast();
 
 	const loadItems = useCallback(
@@ -1094,7 +1109,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									viewMode === 'grid' &&
 										'bg-blue-50 text-blue-600'
 								)}
-								onClick={() => setViewMode('grid')}
+								onClick={() => updateViewMode('grid')}
 							>
 								<Grid className="h-4 w-4" />
 							</Button>
@@ -1106,7 +1121,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									viewMode === 'list' &&
 										'bg-blue-50 text-blue-600'
 								)}
-								onClick={() => setViewMode('list')}
+								onClick={() => updateViewMode('list')}
 							>
 								<List className="h-4 w-4" />
 							</Button>
@@ -1118,7 +1133,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									viewMode === 'detail' &&
 										'bg-blue-50 text-blue-600'
 								)}
-								onClick={() => setViewMode('detail')}
+								onClick={() => updateViewMode('detail')}
 							>
 								<Table className="h-4 w-4" />
 							</Button>
