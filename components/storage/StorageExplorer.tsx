@@ -120,6 +120,7 @@ function ItemMenu({
 			toast({
 				title: 'Success',
 				description: 'URL copied to clipboard',
+				variant: 'success',
 			});
 		} catch (error) {
 			toast({
@@ -472,6 +473,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Item deleted successfully',
+					variant: 'success',
 				});
 			}
 		} catch (error) {
@@ -513,6 +515,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Folder created successfully',
+					variant: 'success',
 				});
 				setNewFolderName('');
 				setIsNewFolderDialogOpen(false);
@@ -685,7 +688,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Item renamed successfully',
-					duration: 3000,
+					variant: 'success',
 				});
 				setNewName('');
 				setItemToRename(null);
@@ -734,6 +737,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			toast({
 				title: 'Success',
 				description: response.message,
+				variant: 'success',
 			});
 		} catch (error) {
 			toast({
@@ -764,6 +768,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			toast({
 				title: 'Success',
 				description: response.message,
+				variant: 'success',
 			});
 		} catch (error) {
 			toast({
