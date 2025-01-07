@@ -110,7 +110,9 @@ function ItemMenu({
 			if (item.Type === 'folder') {
 				// For folders, copy the path URL with NEXT_PUBLIC_HOST
 				const pathSegments = item.Key.split('/').filter(Boolean);
-				url = `${process.env.NEXT_PUBLIC_HOST}/storage/${pathSegments.join('/')}`;
+				url = `${
+					process.env.NEXT_PUBLIC_HOST
+				}/storage/${pathSegments.join('/')}`;
 			} else {
 				// For files, get the appropriate URL (public or private)
 				url = await storageActions.getFileUrl(item.Key);
