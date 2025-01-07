@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Download, Loader2, RefreshCw, Lock } from 'lucide-react';
@@ -14,6 +14,12 @@ interface FileViewerProps {
 	onClose: () => void;
 }
 
+interface FileError {
+	message: string;
+	code?: string;
+	status?: number;
+}
+
 export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 	const [fileUrl, setFileUrl] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -23,63 +29,64 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 	);
 	const [hasLoadedSuccessfully, setHasLoadedSuccessfully] = useState(false);
 	const [isForbidden, setIsForbidden] = useState(false);
-	const objectRef = useRef<HTMLObjectElement>(null);
 
 	// Function to load or refresh the file URL
-	const loadFileUrl = async (isRetry = false) => {
-		try {
-			setLoading(true);
-			const url = await storageActions.getFileUrl(item.Key);
-			setFileUrl(url);
-			setRetryCount(0);
-			setHasLoadedSuccessfully(true);
-			setIsForbidden(false);
-			if (retryTimeout) {
-				clearTimeout(retryTimeout);
-				setRetryTimeout(null);
-			}
-		} catch (error: any) {
-			console.error('Error loading file:', error);
-			// Check if the error is a forbidden/access denied error
-			const isForbiddenError =
-				error?.message?.toLowerCase().includes('forbidden') ||
-				error?.message?.toLowerCase().includes('access denied');
-
-			if (isForbiddenError) {
-				setIsForbidden(true);
-				toast({
-					title: 'Access Denied',
-					description:
-						'You do not have permission to access this file.',
-					variant: 'destructive',
-				});
-			} else {
-				// For other errors, keep retrying
-				const timeout = setTimeout(() => {
-					setRetryCount((prev) => prev + 1);
-					loadFileUrl(true);
-				}, 3000);
-				setRetryTimeout(timeout);
-
-				if (isRetry) {
-					toast({
-						title: 'Retrying...',
-						description: `Attempt ${
-							retryCount + 1
-						}. Retrying in 3 seconds...`,
-						duration: 2000,
-					});
+	const loadFileUrl = useCallback(
+		async (isRetry = false) => {
+			try {
+				setLoading(true);
+				const url = await storageActions.getFileUrl(item.Key);
+				setFileUrl(url);
+				setRetryCount(0);
+				setHasLoadedSuccessfully(true);
+				setIsForbidden(false);
+				if (retryTimeout) {
+					clearTimeout(retryTimeout);
+					setRetryTimeout(null);
 				}
+			} catch (error: unknown) {
+				console.error('Error loading file:', error);
+				const fileError = error as FileError;
+				const isForbiddenError =
+					fileError.message?.toLowerCase().includes('forbidden') ||
+					fileError.message?.toLowerCase().includes('access denied');
+
+				if (isForbiddenError) {
+					setIsForbidden(true);
+					toast({
+						title: 'Access Denied',
+						description:
+							'You do not have permission to access this file.',
+						variant: 'destructive',
+					});
+				} else {
+					const timeout = setTimeout(() => {
+						setRetryCount((prev) => prev + 1);
+						void loadFileUrl(true);
+					}, 3000);
+					setRetryTimeout(timeout);
+
+					if (isRetry) {
+						toast({
+							title: 'Retrying...',
+							description: `Attempt ${
+								retryCount + 1
+							}. Retrying in 3 seconds...`,
+							duration: 2000,
+						});
+					}
+				}
+			} finally {
+				setLoading(false);
 			}
-		} finally {
-			setLoading(false);
-		}
-	};
+		},
+		[item.Key, retryCount, retryTimeout]
+	);
 
 	// Handle errors for images and PDFs
 	const handleError = () => {
 		if (!hasLoadedSuccessfully && !isForbidden) {
-			loadFileUrl();
+			void loadFileUrl();
 		}
 	};
 
@@ -88,7 +95,7 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 		if (isOpen) {
 			setHasLoadedSuccessfully(false);
 			setIsForbidden(false);
-			loadFileUrl();
+			void loadFileUrl();
 		} else {
 			setFileUrl(null);
 			setRetryCount(0);
@@ -105,22 +112,22 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 				clearTimeout(retryTimeout);
 			}
 		};
-	}, [isOpen, item.Key]);
+	}, [isOpen, loadFileUrl, retryTimeout]);
 
 	const handleDownload = async () => {
 		try {
 			const url = await storageActions.getFileUrl(item.Key);
 			const link = document.createElement('a');
 			link.href = url;
-			link.download = item.Key.split('/').pop() || 'download';
+			link.download = item.Key.split('/').pop() || item.Key;
 			document.body.appendChild(link);
 			link.click();
 			document.body.removeChild(link);
-		} catch (error) {
-			console.error('Error downloading file:', error);
+		} catch (error: unknown) {
+			const fileError = error as FileError;
 			toast({
-				title: 'Error',
-				description: 'Failed to download file',
+				title: 'Download Failed',
+				description: fileError.message || 'Failed to download file',
 				variant: 'destructive',
 			});
 		}
@@ -146,6 +153,7 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 							</p>
 						</div>
 					) : (
+						// eslint-disable-next-line @next/next/no-img-element
 						<img
 							src={fileUrl}
 							alt={fileName}
@@ -188,7 +196,6 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 				<div className="flex flex-col items-center gap-4">
 					<div className="w-full h-[70vh] relative">
 						<object
-							ref={objectRef}
 							data={fileUrl}
 							type="application/pdf"
 							className="w-full h-full"
@@ -233,13 +240,17 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 			);
 		}
 
+		// For other file types, show download button
 		return (
-			<div className="text-center p-4">
-				<p className="mb-4">This file type cannot be previewed.</p>
+			<div className="flex flex-col items-center justify-center p-8 bg-gray-50 rounded-lg border border-blue-200">
+				<p className="text-lg font-medium text-blue-900 mb-4">
+					Preview not available for this file type
+				</p>
 				<Button
 					onClick={handleDownload}
 					className="bg-blue-600 hover:bg-blue-700"
 				>
+					<Download className="h-4 w-4 mr-2" />
 					Download File
 				</Button>
 			</div>
@@ -254,7 +265,7 @@ export function FileViewer({ item, isOpen, onClose }: FileViewerProps) {
 					{!item.isPublic && (
 						<Lock
 							className="h-4 w-4 text-blue-600"
-							title="Private file"
+							aria-label="Private file"
 						/>
 					)}
 				</DialogTitle>
