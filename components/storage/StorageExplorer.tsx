@@ -34,7 +34,6 @@ import {
 	getFileIcon,
 } from '@/utils/storage';
 import * as storageActions from '@/app/actions/storage';
-import { uploadFile } from '@/app/actions/storage';
 import { FileViewer } from './FileViewer';
 import { cn } from '@/lib/utils';
 
@@ -255,39 +254,104 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 					files.map((file) => ({ fileName: file.name, progress: 0 }))
 				);
 
-				for (let i = 0; i < files.length; i++) {
-					const file = files[i];
-					try {
-						const key = targetFolder
-							? `${targetFolder}${file.name}`
-							: currentPath
-							? `${currentPath}${file.name}`
-							: file.name;
-						await uploadFile(file, key);
+				// Group files by their folder structure
+				const filesByFolder = new Map<string, File[]>();
+				for (const file of files) {
+					const relativePath = file.webkitRelativePath || file.name;
+					const pathParts = relativePath.split('/');
 
-						// Update progress for this file to 100%
-						setUploadProgresses((prev) =>
-							prev.map((p, idx) =>
-								idx === i ? { ...p, progress: 100 } : p
-							)
-						);
-					} catch (error: unknown) {
-						toast({
-							title: 'Error',
-							description:
-								error instanceof Error
-									? error.message
-									: `Failed to upload ${file.name}`,
-							variant: 'destructive',
-						});
+					if (pathParts.length > 1) {
+						// This is a file inside a folder
+						const folderPath =
+							pathParts.slice(0, -1).join('/') + '/';
+						const existingFiles =
+							filesByFolder.get(folderPath) || [];
+						filesByFolder.set(folderPath, [...existingFiles, file]);
+					} else {
+						// This is a root file
+						const existingFiles = filesByFolder.get('') || [];
+						filesByFolder.set('', [...existingFiles, file]);
+					}
+				}
+
+				// Create folders and upload files
+				let fileIndex = 0;
+				let successCount = 0;
+				for (const [
+					folderPath,
+					folderFiles,
+				] of filesByFolder.entries()) {
+					if (folderPath) {
+						// Create the folder structure
+						const basePath = targetFolder || currentPath;
+						const fullFolderPath = `${basePath}${folderPath}`;
+
+						try {
+							await storageActions.createFolder(fullFolderPath);
+						} catch (error) {
+							console.error(
+								`Error creating folder ${fullFolderPath}:`,
+								error
+							);
+							// Continue even if folder creation fails (might already exist)
+						}
+					}
+
+					// Upload files in this folder
+					for (const file of folderFiles) {
+						try {
+							const basePath = targetFolder || currentPath;
+							const key = folderPath
+								? `${basePath}${folderPath}${file.name}`
+								: `${basePath}${file.name}`;
+
+							// Start with 0% progress
+							setUploadProgresses((prev) =>
+								prev.map((p, idx) =>
+									idx === fileIndex
+										? { ...p, progress: 0 }
+										: p
+								)
+							);
+
+							await storageActions.uploadFile(file, key);
+							successCount++;
+
+							// Set to 100% when complete
+							setUploadProgresses((prev) =>
+								prev.map((p, idx) =>
+									idx === fileIndex
+										? { ...p, progress: 100 }
+										: p
+								)
+							);
+						} catch (error: unknown) {
+							toast({
+								title: 'Error',
+								description:
+									error instanceof Error
+										? error.message
+										: `Failed to upload ${file.name}`,
+								variant: 'destructive',
+							});
+						}
+						fileIndex++;
 					}
 				}
 
 				await refreshItems();
-				toast({
-					title: 'Success',
-					description: 'Files uploaded successfully',
-				});
+
+				// Only show success toast if at least one file was uploaded successfully
+				if (successCount > 0) {
+					toast({
+						title: 'Success',
+						description:
+							successCount === 1
+								? 'File uploaded successfully'
+								: `${successCount} files uploaded successfully`,
+						variant: 'success',
+					});
+				}
 			} catch (error: unknown) {
 				toast({
 					title: 'Error',
@@ -312,7 +376,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		[handleFileDrop]
 	);
 
-	// Separate dropzone for the main area (no click)
+	// Update the dropzone configurations
 	const {
 		getRootProps: getMainDropzoneProps,
 		getInputProps: getMainInputProps,
@@ -320,14 +384,31 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	} = useDropzone({
 		onDrop,
 		noClick: true,
+		noDrag: false,
+		noKeyboard: false,
+		multiple: true,
+		useFsAccessApi: false,
 	});
 
-	// Separate dropzone for the upload button (with click)
+	// Separate dropzones for files and folders
+	const { getRootProps: getFileRootProps, getInputProps: getFileInputProps } =
+		useDropzone({
+			onDrop,
+			multiple: true,
+			useFsAccessApi: false,
+			noDragEventsBubbling: true,
+			noClick: false,
+		});
+
 	const {
-		getRootProps: getButtonRootProps,
-		getInputProps: getButtonInputProps,
+		getRootProps: getFolderRootProps,
+		getInputProps: getFolderInputProps,
 	} = useDropzone({
 		onDrop,
+		multiple: true,
+		useFsAccessApi: false,
+		noDragEventsBubbling: true,
+		noClick: false,
 	});
 
 	const handleDelete = async (item: StorageItem) => {
@@ -951,7 +1032,106 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 
 	return (
 		<div className="p-4 space-y-4">
-			<div className="flex items-center justify-between">
+			<div className="flex flex-col items-start gap-4">
+				<div className="flex flex-col w-full items-end">
+					<div className="flex items-center gap-4">
+						<div className="flex gap-1 border border-blue-200 rounded-lg p-1">
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'grid' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => setViewMode('grid')}
+							>
+								<Grid className="h-4 w-4" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'list' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => setViewMode('list')}
+							>
+								<List className="h-4 w-4" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'detail' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => setViewMode('detail')}
+							>
+								<Table className="h-4 w-4" />
+							</Button>
+						</div>
+						<div className="flex gap-2">
+							<Button
+								onClick={() => setIsNewFolderDialogOpen(true)}
+								className="bg-blue-600 hover:bg-blue-700"
+								disabled={loading}
+							>
+								<FolderPlus className="h-4 w-4 mr-2" />
+								New Folder
+							</Button>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										className="bg-blue-600 hover:bg-blue-700"
+										disabled={loading || isUploading}
+									>
+										{isUploading ? (
+											<>
+												<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+												Uploading...
+											</>
+										) : (
+											<>
+												<Upload className="h-4 w-4 mr-2" />
+												Upload
+												<ChevronRight className="h-4 w-4 ml-2" />
+											</>
+										)}
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<div {...getFileRootProps()}>
+										<input {...getFileInputProps()} />
+										<DropdownMenuItem
+											className="cursor-pointer"
+											onSelect={(e) => e.preventDefault()}
+										>
+											<Upload className="h-4 w-4 mr-2" />
+											Upload Files
+										</DropdownMenuItem>
+									</div>
+									<div {...getFolderRootProps()}>
+										<input
+											{...getFolderInputProps()}
+											webkitdirectory=""
+											type="file"
+										/>
+										<DropdownMenuItem
+											className="cursor-pointer"
+											onSelect={(e) => e.preventDefault()}
+										>
+											<FolderPlus className="h-4 w-4 mr-2" />
+											Upload Folder
+										</DropdownMenuItem>
+									</div>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+					</div>
+				</div>
 				<div className="flex items-center gap-2">
 					{currentPath && (
 						<Button
@@ -969,75 +1149,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 						</Button>
 					)}
 					{renderBreadcrumbs()}
-				</div>
-				<div className="flex items-center gap-4">
-					<div className="flex gap-1 border border-blue-200 rounded-lg p-1">
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'grid' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('grid')}
-						>
-							<Grid className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'list' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('list')}
-						>
-							<List className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'detail' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('detail')}
-						>
-							<Table className="h-4 w-4" />
-						</Button>
-					</div>
-					<div className="flex gap-2">
-						<Button
-							onClick={() => setIsNewFolderDialogOpen(true)}
-							className="bg-blue-600 hover:bg-blue-700"
-							disabled={loading}
-						>
-							<FolderPlus className="h-4 w-4 mr-2" />
-							New Folder
-						</Button>
-						<div {...getButtonRootProps()}>
-							<input {...getButtonInputProps()} />
-							<Button
-								className="bg-blue-600 hover:bg-blue-700"
-								disabled={loading || isUploading}
-							>
-								{isUploading ? (
-									<>
-										<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-										Uploading...
-									</>
-								) : (
-									<>
-										<Upload className="h-4 w-4 mr-2" />
-										Upload Files
-									</>
-								)}
-							</Button>
-						</div>
-					</div>
 				</div>
 			</div>
 
