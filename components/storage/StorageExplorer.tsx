@@ -56,6 +56,13 @@ import {
 	DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
+declare module 'react' {
+	interface InputHTMLAttributes<T> extends HTMLAttributes<T> {
+		webkitdirectory?: string;
+		directory?: string;
+	}
+}
+
 interface StorageExplorerProps {
 	initialPath?: string;
 }
@@ -1181,8 +1188,8 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									<div {...getFolderRootProps()}>
 										<input
 											{...getFolderInputProps()}
-											// @ts-ignore
-											webkitdirectory="true"
+											directory=""
+											webkitdirectory=""
 											type="file"
 										/>
 										<DropdownMenuItem
