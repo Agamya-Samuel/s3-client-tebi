@@ -20,6 +20,7 @@ import {
 	Trash2,
 	Globe2,
 	Lock,
+	Link,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -34,7 +35,6 @@ import {
 	getFileIcon,
 } from '@/utils/storage';
 import * as storageActions from '@/app/actions/storage';
-import { uploadFile } from '@/app/actions/storage';
 import { FileViewer } from './FileViewer';
 import { cn } from '@/lib/utils';
 
@@ -59,6 +59,8 @@ import {
 interface StorageExplorerProps {
 	initialPath?: string;
 }
+
+const MAX_PATH_LIMIT = 4;
 
 const FileIcon = ({
 	fileName,
@@ -89,6 +91,8 @@ function ItemMenu({
 	isDeletingItem,
 }: ItemMenuProps) {
 	const [isUpdatingPermission, setIsUpdatingPermission] = useState(false);
+	const [isCopying, setIsCopying] = useState(false);
+	const { toast } = useToast();
 
 	const handlePermissionChange = async () => {
 		setIsUpdatingPermission(true);
@@ -96,6 +100,39 @@ function ItemMenu({
 			await onPermissionChange(item, !item.isPublic);
 		} finally {
 			setIsUpdatingPermission(false);
+		}
+	};
+
+	const handleCopyUrl = async () => {
+		setIsCopying(true);
+		try {
+			let url;
+			if (item.Type === 'folder') {
+				// For folders, copy the path URL with NEXT_PUBLIC_HOST
+				const pathSegments = item.Key.split('/').filter(Boolean);
+				url = `${
+					process.env.NEXT_PUBLIC_HOST
+				}/storage/${pathSegments.join('/')}`;
+			} else {
+				// For files, get the appropriate URL (public or private)
+				url = await storageActions.getFileUrl(item.Key);
+			}
+
+			await navigator.clipboard.writeText(url);
+			toast({
+				title: 'Success',
+				description: 'URL copied to clipboard',
+				variant: 'success',
+			});
+		} catch (error) {
+			console.error('Error copying URL:', error);
+			toast({
+				title: 'Error',
+				description: 'Failed to copy URL',
+				variant: 'destructive',
+			});
+		} finally {
+			setIsCopying(false);
 		}
 	};
 
@@ -107,10 +144,14 @@ function ItemMenu({
 					size="icon"
 					className="hover:bg-blue-100 hover:text-blue-700"
 					disabled={
-						isDeletingItem === item.Key || isUpdatingPermission
+						isDeletingItem === item.Key ||
+						isUpdatingPermission ||
+						isCopying
 					}
 				>
-					{isDeletingItem === item.Key || isUpdatingPermission ? (
+					{isDeletingItem === item.Key ||
+					isUpdatingPermission ||
+					isCopying ? (
 						<Loader2 className="h-4 w-4 animate-spin text-blue-600" />
 					) : (
 						<MoreVertical className="h-4 w-4 text-blue-600" />
@@ -150,15 +191,28 @@ function ItemMenu({
 					</>
 				)}
 				<DropdownMenuItem
-					onClick={(e) => {
+					onClick={async (e) => {
 						e.stopPropagation();
-						onRename(item);
+						await handleCopyUrl();
 					}}
 					className="text-blue-600"
+					disabled={isCopying}
 				>
-					<Pencil className="h-4 w-4 mr-2" />
-					Rename
+					<Link className="h-4 w-4 mr-2" />
+					Copy URL
 				</DropdownMenuItem>
+				{item.Type === 'file' && (
+					<DropdownMenuItem
+						onClick={(e) => {
+							e.stopPropagation();
+							onRename(item);
+						}}
+						className="text-blue-600"
+					>
+						<Pencil className="h-4 w-4 mr-2" />
+						Rename
+					</DropdownMenuItem>
+				)}
 				<DropdownMenuItem
 					onClick={(e) => {
 						e.stopPropagation();
@@ -203,6 +257,21 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	const [viewMode, setViewMode] = useState<'grid' | 'list' | 'detail'>(
 		'grid'
 	);
+
+	// Load saved view mode from localStorage after initial render
+	useEffect(() => {
+		const savedMode = localStorage.getItem('storageViewMode');
+		if (savedMode) {
+			setViewMode(savedMode as 'grid' | 'list' | 'detail');
+		}
+	}, []);
+
+	// Create a function to update view mode that also saves to localStorage
+	const updateViewMode = (mode: 'grid' | 'list' | 'detail') => {
+		setViewMode(mode);
+		localStorage.setItem('storageViewMode', mode);
+	};
+
 	const { toast } = useToast();
 
 	const loadItems = useCallback(
@@ -255,39 +324,104 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 					files.map((file) => ({ fileName: file.name, progress: 0 }))
 				);
 
-				for (let i = 0; i < files.length; i++) {
-					const file = files[i];
-					try {
-						const key = targetFolder
-							? `${targetFolder}${file.name}`
-							: currentPath
-							? `${currentPath}${file.name}`
-							: file.name;
-						await uploadFile(file, key);
+				// Group files by their folder structure
+				const filesByFolder = new Map<string, File[]>();
+				for (const file of files) {
+					const relativePath = file.webkitRelativePath || file.name;
+					const pathParts = relativePath.split('/');
 
-						// Update progress for this file to 100%
-						setUploadProgresses((prev) =>
-							prev.map((p, idx) =>
-								idx === i ? { ...p, progress: 100 } : p
-							)
-						);
-					} catch (error: unknown) {
-						toast({
-							title: 'Error',
-							description:
-								error instanceof Error
-									? error.message
-									: `Failed to upload ${file.name}`,
-							variant: 'destructive',
-						});
+					if (pathParts.length > 1) {
+						// This is a file inside a folder
+						const folderPath =
+							pathParts.slice(0, -1).join('/') + '/';
+						const existingFiles =
+							filesByFolder.get(folderPath) || [];
+						filesByFolder.set(folderPath, [...existingFiles, file]);
+					} else {
+						// This is a root file
+						const existingFiles = filesByFolder.get('') || [];
+						filesByFolder.set('', [...existingFiles, file]);
+					}
+				}
+
+				// Create folders and upload files
+				let fileIndex = 0;
+				let successCount = 0;
+				for (const [
+					folderPath,
+					folderFiles,
+				] of filesByFolder.entries()) {
+					if (folderPath) {
+						// Create the folder structure
+						const basePath = targetFolder || currentPath;
+						const fullFolderPath = `${basePath}${folderPath}`;
+
+						try {
+							await storageActions.createFolder(fullFolderPath);
+						} catch (error) {
+							console.error(
+								`Error creating folder ${fullFolderPath}:`,
+								error
+							);
+							// Continue even if folder creation fails (might already exist)
+						}
+					}
+
+					// Upload files in this folder
+					for (const file of folderFiles) {
+						try {
+							const basePath = targetFolder || currentPath;
+							const key = folderPath
+								? `${basePath}${folderPath}${file.name}`
+								: `${basePath}${file.name}`;
+
+							// Start with 0% progress
+							setUploadProgresses((prev) =>
+								prev.map((p, idx) =>
+									idx === fileIndex
+										? { ...p, progress: 0 }
+										: p
+								)
+							);
+
+							await storageActions.uploadFile(file, key);
+							successCount++;
+
+							// Set to 100% when complete
+							setUploadProgresses((prev) =>
+								prev.map((p, idx) =>
+									idx === fileIndex
+										? { ...p, progress: 100 }
+										: p
+								)
+							);
+						} catch (error: unknown) {
+							toast({
+								title: 'Error',
+								description:
+									error instanceof Error
+										? error.message
+										: `Failed to upload ${file.name}`,
+								variant: 'destructive',
+							});
+						}
+						fileIndex++;
 					}
 				}
 
 				await refreshItems();
-				toast({
-					title: 'Success',
-					description: 'Files uploaded successfully',
-				});
+
+				// Only show success toast if at least one file was uploaded successfully
+				if (successCount > 0) {
+					toast({
+						title: 'Success',
+						description:
+							successCount === 1
+								? 'File uploaded successfully'
+								: `${successCount} files uploaded successfully`,
+						variant: 'success',
+					});
+				}
 			} catch (error: unknown) {
 				toast({
 					title: 'Error',
@@ -312,7 +446,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		[handleFileDrop]
 	);
 
-	// Separate dropzone for the main area (no click)
+	// Update the dropzone configurations
 	const {
 		getRootProps: getMainDropzoneProps,
 		getInputProps: getMainInputProps,
@@ -320,14 +454,31 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	} = useDropzone({
 		onDrop,
 		noClick: true,
+		noDrag: false,
+		noKeyboard: false,
+		multiple: true,
+		useFsAccessApi: false,
 	});
 
-	// Separate dropzone for the upload button (with click)
+	// Separate dropzones for files and folders
+	const { getRootProps: getFileRootProps, getInputProps: getFileInputProps } =
+		useDropzone({
+			onDrop,
+			multiple: true,
+			useFsAccessApi: false,
+			noDragEventsBubbling: true,
+			noClick: false,
+		});
+
 	const {
-		getRootProps: getButtonRootProps,
-		getInputProps: getButtonInputProps,
+		getRootProps: getFolderRootProps,
+		getInputProps: getFolderInputProps,
 	} = useDropzone({
 		onDrop,
+		multiple: true,
+		useFsAccessApi: false,
+		noDragEventsBubbling: true,
+		noClick: false,
 	});
 
 	const handleDelete = async (item: StorageItem) => {
@@ -342,6 +493,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Item deleted successfully',
+					variant: 'success',
 				});
 			}
 		} catch (error) {
@@ -383,6 +535,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Folder created successfully',
+					variant: 'success',
 				});
 				setNewFolderName('');
 				setIsNewFolderDialogOpen(false);
@@ -447,95 +600,86 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	};
 
 	const renderBreadcrumbs = () => {
-		const segments = currentPath.split('/').filter(Boolean);
-		const showCollapsed = segments.length > 3;
-		const visibleSegments = showCollapsed
-			? [...segments.slice(0, 1), ...segments.slice(-2)]
-			: segments;
+		const pathSegments = currentPath.split('/').filter(Boolean);
+		const isPathTruncated = pathSegments.length > MAX_PATH_LIMIT;
+		const displayedSegments = isPathTruncated
+			? pathSegments.slice(pathSegments.length - MAX_PATH_LIMIT)
+			: pathSegments;
+		const hiddenSegments = isPathTruncated
+			? pathSegments.slice(0, pathSegments.length - MAX_PATH_LIMIT)
+			: [];
 
 		return (
 			<div className="flex items-center gap-1 text-sm">
 				<Button
 					variant="ghost"
-					size="sm"
-					className="hover:bg-blue-50 hover:text-blue-600"
+					size="icon"
+					className="hover:bg-blue-100 hover:text-blue-700"
 					onClick={() => loadItems('')}
 				>
-					<Home className="h-4 w-4" />
+					<Home className="h-4 w-4 text-blue-600" />
 				</Button>
-				{visibleSegments.map((segment, index) => {
-					const isCollapsedSection = showCollapsed && index === 0;
-					const pathToHere = isCollapsedSection
-						? segments.slice(0, 1).join('/') + '/'
-						: showCollapsed && index > 0
-						? segments.slice(0, -2 + index).join('/') + '/'
-						: segments.slice(0, index + 1).join('/') + '/';
-
-					return (
-						<div key={pathToHere} className="flex items-center">
-							<ChevronRight className="h-4 w-4 text-blue-400" />
-							<Button
-								variant="ghost"
-								size="sm"
-								className="hover:bg-blue-50 hover:text-blue-600"
-								onClick={() => loadItems(pathToHere)}
-							>
-								{segment}
-							</Button>
-							{isCollapsedSection && (
-								<>
-									<ChevronRight className="h-4 w-4 text-blue-400" />
-									<DropdownMenu>
-										<DropdownMenuTrigger asChild>
-											<Button
-												variant="ghost"
-												size="sm"
-												className="px-2 hover:bg-blue-50 hover:text-blue-600"
-											>
-												<span className="text-blue-400">
-													...
-												</span>
-											</Button>
-										</DropdownMenuTrigger>
-										<DropdownMenuContent align="start">
-											{segments
-												.slice(1, -2)
-												.map(
-													(
-														hiddenSegment,
-														hiddenIndex
-													) => {
-														const hiddenPath =
-															segments
-																.slice(
-																	0,
-																	hiddenIndex +
-																		2
-																)
-																.join('/') +
-															'/';
-														return (
-															<DropdownMenuItem
-																key={hiddenPath}
-																onClick={() =>
-																	loadItems(
-																		hiddenPath
-																	)
-																}
-																className="text-blue-600"
-															>
-																{hiddenSegment}
-															</DropdownMenuItem>
-														);
-													}
-												)}
-										</DropdownMenuContent>
-									</DropdownMenu>
-								</>
-							)}
-						</div>
-					);
-				})}
+				{isPathTruncated && (
+					<>
+						<ChevronRight className="h-4 w-4 text-blue-600" />
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button
+									variant="ghost"
+									className="hover:bg-blue-100 hover:text-blue-700 px-2"
+								>
+									<span className="text-blue-600">...</span>
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="start">
+								{hiddenSegments.map((segment, index) => {
+									const pathToHere =
+										pathSegments
+											.slice(0, index + 1)
+											.join('/') + '/';
+									return (
+										<DropdownMenuItem
+											key={pathToHere}
+											onClick={() =>
+												loadItems(pathToHere)
+											}
+											className="text-blue-600"
+										>
+											{segment}
+										</DropdownMenuItem>
+									);
+								})}
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</>
+				)}
+				{displayedSegments.map((segment, index) => (
+					<React.Fragment key={segment}>
+						<ChevronRight className="h-4 w-4 text-blue-600" />
+						<Button
+							variant="ghost"
+							className="hover:bg-blue-100 hover:text-blue-700"
+							onClick={() => {
+								const targetPath = isPathTruncated
+									? pathSegments
+											.slice(
+												0,
+												pathSegments.length -
+													MAX_PATH_LIMIT +
+													index +
+													1
+											)
+											.join('/') + '/'
+									: pathSegments
+											.slice(0, index + 1)
+											.join('/') + '/';
+								loadItems(targetPath);
+							}}
+						>
+							{segment}
+						</Button>
+					</React.Fragment>
+				))}
 			</div>
 		);
 	};
@@ -564,7 +708,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				toast({
 					title: 'Success',
 					description: 'Item renamed successfully',
-					duration: 3000,
+					variant: 'success',
 				});
 				setNewName('');
 				setItemToRename(null);
@@ -613,6 +757,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			toast({
 				title: 'Success',
 				description: response.message,
+				variant: 'success',
 			});
 		} catch (error) {
 			toast({
@@ -643,6 +788,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			toast({
 				title: 'Success',
 				description: response.message,
+				variant: 'success',
 			});
 		} catch (error) {
 			toast({
@@ -951,8 +1097,108 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 
 	return (
 		<div className="p-4 space-y-4">
-			<div className="flex items-center justify-between">
-				<div className="flex items-center gap-2">
+			<div className="flex flex-col items-start gap-4">
+				<div className="flex flex-col w-full items-end">
+					<div className="flex items-center gap-4">
+						<div className="flex gap-1 border border-blue-200 rounded-lg p-1">
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'grid' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => updateViewMode('grid')}
+							>
+								<Grid className="h-4 w-4" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'list' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => updateViewMode('list')}
+							>
+								<List className="h-4 w-4" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className={cn(
+									'hover:bg-blue-50 hover:text-blue-600',
+									viewMode === 'detail' &&
+										'bg-blue-50 text-blue-600'
+								)}
+								onClick={() => updateViewMode('detail')}
+							>
+								<Table className="h-4 w-4" />
+							</Button>
+						</div>
+						<div className="flex gap-2">
+							<Button
+								onClick={() => setIsNewFolderDialogOpen(true)}
+								className="bg-blue-600 hover:bg-blue-700"
+								disabled={loading}
+							>
+								<FolderPlus className="h-4 w-4 mr-2" />
+								New Folder
+							</Button>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										className="bg-blue-600 hover:bg-blue-700"
+										disabled={loading || isUploading}
+									>
+										{isUploading ? (
+											<>
+												<Loader2 className="h-4 w-4 mr-2 animate-spin" />
+												Uploading...
+											</>
+										) : (
+											<>
+												<Upload className="h-4 w-4 mr-2" />
+												Upload
+												<ChevronRight className="h-4 w-4 ml-2" />
+											</>
+										)}
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<div {...getFileRootProps()}>
+										<input {...getFileInputProps()} />
+										<DropdownMenuItem
+											className="cursor-pointer"
+											onSelect={(e) => e.preventDefault()}
+										>
+											<Upload className="h-4 w-4 mr-2" />
+											Upload Files
+										</DropdownMenuItem>
+									</div>
+									<div {...getFolderRootProps()}>
+										<input
+											{...getFolderInputProps()}
+											// @ts-ignore
+											webkitdirectory="true"
+											type="file"
+										/>
+										<DropdownMenuItem
+											className="cursor-pointer"
+											onSelect={(e) => e.preventDefault()}
+										>
+											<FolderPlus className="h-4 w-4 mr-2" />
+											Upload Folder
+										</DropdownMenuItem>
+									</div>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+					</div>
+				</div>
+				<div className="flex items-center gap-2 w-full border border-blue-200 rounded-lg p-1">
 					{currentPath && (
 						<Button
 							variant="outline"
@@ -969,75 +1215,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 						</Button>
 					)}
 					{renderBreadcrumbs()}
-				</div>
-				<div className="flex items-center gap-4">
-					<div className="flex gap-1 border border-blue-200 rounded-lg p-1">
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'grid' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('grid')}
-						>
-							<Grid className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'list' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('list')}
-						>
-							<List className="h-4 w-4" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="sm"
-							className={cn(
-								'hover:bg-blue-50 hover:text-blue-600',
-								viewMode === 'detail' &&
-									'bg-blue-50 text-blue-600'
-							)}
-							onClick={() => setViewMode('detail')}
-						>
-							<Table className="h-4 w-4" />
-						</Button>
-					</div>
-					<div className="flex gap-2">
-						<Button
-							onClick={() => setIsNewFolderDialogOpen(true)}
-							className="bg-blue-600 hover:bg-blue-700"
-							disabled={loading}
-						>
-							<FolderPlus className="h-4 w-4 mr-2" />
-							New Folder
-						</Button>
-						<div {...getButtonRootProps()}>
-							<input {...getButtonInputProps()} />
-							<Button
-								className="bg-blue-600 hover:bg-blue-700"
-								disabled={loading || isUploading}
-							>
-								{isUploading ? (
-									<>
-										<Loader2 className="h-4 w-4 mr-2 animate-spin" />
-										Uploading...
-									</>
-								) : (
-									<>
-										<Upload className="h-4 w-4 mr-2" />
-										Upload Files
-									</>
-								)}
-							</Button>
-						</div>
-					</div>
 				</div>
 			</div>
 

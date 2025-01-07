@@ -17,6 +17,7 @@ import {
 	AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import SparkMD5 from 'spark-md5';
 import {
 	StorageItem,
 	UploadResponse,
@@ -36,12 +37,10 @@ const s3Client = new S3Client({
 
 const BUCKET_NAME = process.env.TEBI_BUCKET_NAME || '';
 
-// Size threshold for using presigned URLs (1MB)
-const DIRECT_UPLOAD_SIZE_LIMIT = 1 * 1024 * 1024;
-
 // Size threshold for using multipart upload (5MB)
-const MULTIPART_THRESHOLD = 5 * 1024 * 1024;
+const MULTIPART_THRESHOLD = 5 * 1024 * 1024; // 5MB threshold for multipart upload
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunk size
+const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024; // 10GB max file size
 
 export async function listItems(prefix: string = ''): Promise<ListResponse> {
 	try {
@@ -124,19 +123,26 @@ export async function uploadFile(
 	key: string
 ): Promise<UploadResponse> {
 	try {
-		if (file.size <= DIRECT_UPLOAD_SIZE_LIMIT) {
-			// For small files, use the direct upload method
-			const arrayBuffer = await file.arrayBuffer();
-			const command = new PutObjectCommand({
-				Bucket: BUCKET_NAME,
-				Key: key,
-				Body: Buffer.from(arrayBuffer),
-				ContentType: file.type,
+		if (file.size > MAX_FILE_SIZE) {
+			throw new Error('File size exceeds maximum limit of 10GB');
+		}
+
+		if (file.size <= MULTIPART_THRESHOLD) {
+			// For small files, use single presigned URL
+			const presignedUrl = await getUploadPresignedUrl(key);
+			const response = await fetch(presignedUrl, {
+				method: 'PUT',
+				body: file,
+				headers: {
+					'Content-Type': file.type,
+				},
 			});
 
-			await s3Client.send(command);
-		} else if (file.size > MULTIPART_THRESHOLD) {
-			// For large files, use multipart upload
+			if (!response.ok) {
+				throw new Error('Failed to upload file using presigned URL');
+			}
+		} else {
+			// For large files, use multipart upload with presigned URLs
 			const createCommand = new CreateMultipartUploadCommand({
 				Bucket: BUCKET_NAME,
 				Key: key,
@@ -154,23 +160,57 @@ export async function uploadFile(
 				for (let i = 0; i < chunks; i++) {
 					const start = i * CHUNK_SIZE;
 					const end = Math.min(start + CHUNK_SIZE, file.size);
-					const chunk = await file.slice(start, end).arrayBuffer();
+					const chunk = file.slice(start, end);
+					const partNumber = i + 1;
 
-					const uploadCommand = new UploadPartCommand({
+					// Calculate MD5 hash using SparkMD5
+					const arrayBuffer = await chunk.arrayBuffer();
+					const spark = new SparkMD5.ArrayBuffer();
+					spark.append(arrayBuffer);
+					const md5Hash = btoa(spark.end(true));
+
+					// Get presigned URL for this part
+					const command = new UploadPartCommand({
 						Bucket: BUCKET_NAME,
 						Key: key,
-						PartNumber: i + 1,
 						UploadId,
-						Body: Buffer.from(chunk),
+						PartNumber: partNumber,
+						ContentMD5: md5Hash,
 					});
 
-					const { ETag } = await s3Client.send(uploadCommand);
+					const presignedUrl = await getSignedUrl(s3Client, command, {
+						expiresIn: 3600,
+					});
+
+					// Upload the part using presigned URL
+					const response = await fetch(presignedUrl, {
+						method: 'PUT',
+						body: chunk,
+						headers: {
+							'Content-MD5': md5Hash,
+						},
+					});
+
+					if (!response.ok) {
+						throw new Error(
+							`Failed to upload part ${partNumber}: ${response.statusText}`
+						);
+					}
+
+					const ETag = response.headers.get('ETag');
+					if (!ETag) {
+						throw new Error(
+							`No ETag received for part ${partNumber}`
+						);
+					}
+
 					parts.push({
-						ETag,
-						PartNumber: i + 1,
+						ETag: ETag.replace(/['"]/g, ''),
+						PartNumber: partNumber,
 					});
 				}
 
+				// Complete the multipart upload
 				const completeCommand = new CompleteMultipartUploadCommand({
 					Bucket: BUCKET_NAME,
 					Key: key,
@@ -189,20 +229,6 @@ export async function uploadFile(
 				await s3Client.send(abortCommand);
 				throw error;
 			}
-		} else {
-			// For medium-sized files, use presigned URL
-			const presignedUrl = await getUploadPresignedUrl(key);
-			const response = await fetch(presignedUrl, {
-				method: 'PUT',
-				body: file,
-				headers: {
-					'Content-Type': file.type,
-				},
-			});
-
-			if (!response.ok) {
-				throw new Error('Failed to upload file using presigned URL');
-			}
 		}
 
 		return {
@@ -212,18 +238,50 @@ export async function uploadFile(
 		};
 	} catch (error) {
 		console.error('Error uploading file:', error);
-		throw new Error('Failed to upload file');
+		throw error;
 	}
 }
 
 export async function deleteItem(key: string): Promise<DeleteResponse> {
 	try {
-		const command = new DeleteObjectCommand({
-			Bucket: BUCKET_NAME,
-			Key: key,
-		});
+		// Check if this is a folder by checking if it ends with '/'
+		const isFolder = key.endsWith('/');
 
-		await s3Client.send(command);
+		if (isFolder) {
+			// List all objects in the folder
+			const command = new ListObjectsV2Command({
+				Bucket: BUCKET_NAME,
+				Prefix: key,
+			});
+
+			const response = await s3Client.send(command);
+			const objects = response.Contents || [];
+
+			// Delete all objects in the folder
+			for (const object of objects) {
+				if (object.Key) {
+					const deleteCommand = new DeleteObjectCommand({
+						Bucket: BUCKET_NAME,
+						Key: object.Key,
+					});
+					await s3Client.send(deleteCommand);
+				}
+			}
+
+			// Delete the folder marker itself
+			const deleteFolderCommand = new DeleteObjectCommand({
+				Bucket: BUCKET_NAME,
+				Key: key,
+			});
+			await s3Client.send(deleteFolderCommand);
+		} else {
+			// For single file deletion
+			const command = new DeleteObjectCommand({
+				Bucket: BUCKET_NAME,
+				Key: key,
+			});
+			await s3Client.send(command);
+		}
 
 		return {
 			success: true,
@@ -284,6 +342,11 @@ export async function getFileUrl(key: string): Promise<string> {
 
 export async function renameItem(oldPath: string, newPath: string) {
 	try {
+		// Add validation to prevent folder renaming
+		if (oldPath.endsWith('/')) {
+			throw new Error('Folder renaming is not supported');
+		}
+
 		// Copy the object to the new location
 		await s3Client.send(
 			new CopyObjectCommand({
