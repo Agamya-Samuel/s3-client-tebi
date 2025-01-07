@@ -20,6 +20,9 @@ import {
 	Trash2,
 	Globe2,
 	Lock,
+	Download,
+	CheckSquare,
+	Square,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -220,6 +223,8 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		'grid'
 	);
 	const { toast } = useToast();
+	const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+	const [isSelectMode, setIsSelectMode] = useState(false);
 
 	const showToast = useCallback(
 		(props: {
@@ -302,7 +307,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 							idx === i ? { ...p, progress: 100 } : p
 						)
 					);
-				} catch (error) {
+				} catch (uploadError) {
 					toast({
 						title: 'Error',
 						description: `Failed to upload ${file.name}`,
@@ -316,7 +321,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				title: 'Success',
 				description: 'Files uploaded successfully',
 			});
-		} catch (error) {
+		} catch (uploadError) {
 			toast({
 				title: 'Error',
 				description: 'Failed to upload files',
@@ -453,10 +458,13 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		loadItems(initialPath);
 	}, [initialPath, loadItems]);
 
-	const handleFolderDragOver = (e: React.DragEvent, folderKey: string) => {
+	const handleFolderDragOver = (e: React.DragEvent) => {
 		e.preventDefault();
 		e.stopPropagation();
-		setDraggedOverFolder(folderKey);
+		const folderKey = e.currentTarget.getAttribute('data-key');
+		if (folderKey) {
+			setDraggedOverFolder(folderKey);
+		}
 	};
 
 	const handleFolderDragLeave = (e: React.DragEvent) => {
@@ -465,14 +473,17 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		setDraggedOverFolder(null);
 	};
 
-	const handleFolderDrop = async (e: React.DragEvent, folderKey: string) => {
+	const handleFolderDrop = (e: React.DragEvent) => {
 		e.preventDefault();
 		e.stopPropagation();
+		const folderKey = e.currentTarget.getAttribute('data-key');
 		setDraggedOverFolder(null);
 
-		const files = Array.from(e.dataTransfer.files);
-		if (files.length > 0) {
-			await handleFileDrop(files, folderKey);
+		if (folderKey) {
+			const files = Array.from(e.dataTransfer.files);
+			if (files.length > 0) {
+				handleFileDrop(files);
+			}
 		}
 	};
 
@@ -646,6 +657,102 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 				duration: 3000,
 			});
 		}
+	};
+
+	const toggleItemSelection = (
+		item: StorageItem,
+		event: React.MouseEvent
+	) => {
+		event.stopPropagation();
+		const newSelectedItems = new Set(selectedItems);
+		if (selectedItems.has(item.Key)) {
+			newSelectedItems.delete(item.Key);
+		} else {
+			newSelectedItems.add(item.Key);
+		}
+		setSelectedItems(newSelectedItems);
+		if (newSelectedItems.size === 0) {
+			setIsSelectMode(false);
+		}
+	};
+
+	const handleMassDelete = async () => {
+		if (!selectedItems.size) return;
+
+		const itemsToDelete = items.filter((item) =>
+			selectedItems.has(item.Key)
+		);
+		let hasError = false;
+
+		for (const item of itemsToDelete) {
+			try {
+				setIsDeletingItem(item.Key);
+				await storageActions.deleteItem(item.Key);
+			} catch (error) {
+				hasError = true;
+				showToast({
+					title: 'Error',
+					description: `Failed to delete ${item.Key}: ${
+						error instanceof Error ? error.message : 'Unknown error'
+					}`,
+					variant: 'destructive',
+					duration: 5000,
+				});
+			} finally {
+				setIsDeletingItem(null);
+			}
+		}
+
+		if (!hasError) {
+			showToast({
+				title: 'Success',
+				description: `Successfully deleted ${itemsToDelete.length} items`,
+				duration: 3000,
+			});
+		}
+
+		setSelectedItems(new Set());
+		setIsSelectMode(false);
+		refreshItems();
+	};
+
+	const handleMassPermissionChange = async (isPublic: boolean) => {
+		if (!selectedItems.size) return;
+
+		const itemsToUpdate = items.filter(
+			(item) => selectedItems.has(item.Key) && item.Type === 'file'
+		);
+		let hasError = false;
+
+		for (const item of itemsToUpdate) {
+			try {
+				await storageActions.setFilePermission(item.Key, isPublic);
+			} catch (error) {
+				hasError = true;
+				showToast({
+					title: 'Error',
+					description: `Failed to update permission for ${
+						item.Key
+					}: ${
+						error instanceof Error ? error.message : 'Unknown error'
+					}`,
+					variant: 'destructive',
+					duration: 5000,
+				});
+			}
+		}
+
+		if (!hasError) {
+			showToast({
+				title: 'Success',
+				description: `Successfully updated permissions for ${itemsToUpdate.length} files`,
+				duration: 3000,
+			});
+		}
+
+		setSelectedItems(new Set());
+		setIsSelectMode(false);
+		refreshItems();
 	};
 
 	const renderItems = () => {
@@ -849,45 +956,71 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 
 		// Default grid view
 		return (
-			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			<div
+				className={cn(
+					'grid gap-4',
+					viewMode === 'grid' &&
+						'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5',
+					viewMode === 'list' && 'grid-cols-1',
+					viewMode === 'detail' && 'grid-cols-1'
+				)}
+			>
 				{items.map((item) => (
 					<Card
 						key={item.Key}
+						data-key={item.Key}
 						className={cn(
-							'p-4 flex items-center justify-between cursor-pointer border-blue-200',
-							item.Type === 'folder' &&
-								draggedOverFolder === item.Key
-								? 'bg-blue-100 border-blue-400 border-dashed'
-								: 'hover:bg-blue-50'
+							'relative group cursor-pointer hover:border-blue-500 transition-colors p-3',
+							draggedOverFolder === item.Key &&
+								'border-blue-500 bg-blue-50'
 						)}
-						onClick={() => handleFileClick(item)}
-						onDragOver={
-							item.Type === 'folder'
-								? (e) => handleFolderDragOver(e, item.Key)
-								: undefined
+						onClick={(e) => handleFileClick(item)}
+						onDragOver={(e) =>
+							item.Type === 'folder' &&
+							handleFolderDragOver(e, item.Key)
 						}
-						onDragLeave={
-							item.Type === 'folder'
-								? handleFolderDragLeave
-								: undefined
+						onDragLeave={(e) =>
+							item.Type === 'folder' && handleFolderDragLeave(e)
 						}
-						onDrop={
-							item.Type === 'folder'
-								? (e) => handleFolderDrop(e, item.Key)
-								: undefined
+						onDrop={(e) =>
+							item.Type === 'folder' &&
+							handleFolderDrop(e, item.Key)
 						}
 					>
-						<div className="flex items-center gap-2">
+						<div className="flex items-center gap-3">
+							<Button
+								variant="ghost"
+								size="icon"
+								className={cn(
+									'hover:bg-blue-100 hover:text-blue-700 h-8 w-8 p-0',
+									(isSelectMode ||
+										selectedItems.has(item.Key)) &&
+										'opacity-100',
+									!isSelectMode &&
+										!selectedItems.has(item.Key) &&
+										'opacity-0 group-hover:opacity-100'
+								)}
+								onClick={(e) => {
+									if (!isSelectMode) setIsSelectMode(true);
+									toggleItemSelection(item, e);
+								}}
+							>
+								{selectedItems.has(item.Key) ? (
+									<CheckSquare className="h-4 w-4 text-blue-600" />
+								) : (
+									<Square className="h-4 w-4 text-blue-600" />
+								)}
+							</Button>
 							{item.Type === 'folder' ? (
-								<Folder className="h-6 w-6 text-blue-600" />
+								<Folder className="h-5 w-5 text-blue-600 shrink-0" />
 							) : (
 								<FileIcon
 									fileName={item.Key}
-									className="h-6 w-6 text-blue-600"
+									className="h-5 w-5 text-blue-600 shrink-0"
 								/>
 							)}
-							<div>
-								<p className="font-medium text-blue-900">
+							<div className="flex-1 min-w-0">
+								<p className="font-medium text-blue-900 truncate">
 									{truncateName(
 										item.Type === 'folder'
 											? item.Key.split('/')
@@ -896,21 +1029,22 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 											: item.Key.split('/').pop() || ''
 									)}
 								</p>
-								<p className="text-sm text-blue-500">
-									{item.Type === 'file' &&
-										formatFileSize(item.Size)}
-								</p>
+								{item.Type === 'file' && (
+									<p className="text-sm text-blue-500">
+										{formatFileSize(item.Size)}
+									</p>
+								)}
 							</div>
+							<ItemMenu
+								item={item}
+								onView={setSelectedFile}
+								onDelete={handleDelete}
+								onRename={handleItemRename}
+								onPermissionChange={handlePermissionChange}
+								isDeletingItem={isDeletingItem}
+								showToast={showToast}
+							/>
 						</div>
-						<ItemMenu
-							item={item}
-							onView={setSelectedFile}
-							onDelete={handleDelete}
-							onRename={handleItemRename}
-							onPermissionChange={handlePermissionChange}
-							isDeletingItem={isDeletingItem}
-							showToast={showToast}
-						/>
 					</Card>
 				))}
 			</div>
@@ -918,8 +1052,8 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	};
 
 	return (
-		<div className="p-4 space-y-4">
-			<div className="flex items-center justify-between">
+		<div className="w-full h-full flex flex-col gap-4">
+			<div className="flex items-center justify-between gap-2">
 				<div className="flex items-center gap-2">
 					{currentPath && (
 						<Button
@@ -938,7 +1072,38 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 					)}
 					{renderBreadcrumbs()}
 				</div>
-				<div className="flex items-center gap-4">
+				<div className="flex items-center gap-2">
+					{selectedItems.size > 0 && (
+						<>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => handleMassDelete()}
+								className="text-red-600 hover:text-red-700"
+							>
+								<Trash2 className="h-4 w-4 mr-2" />
+								Delete ({selectedItems.size})
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => handleMassPermissionChange(true)}
+							>
+								<Globe2 className="h-4 w-4 mr-2" />
+								Make Public
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() =>
+									handleMassPermissionChange(false)
+								}
+							>
+								<Lock className="h-4 w-4 mr-2" />
+								Make Private
+							</Button>
+						</>
+					)}
 					<div className="flex gap-1 border border-blue-200 rounded-lg p-1">
 						<Button
 							variant="ghost"
