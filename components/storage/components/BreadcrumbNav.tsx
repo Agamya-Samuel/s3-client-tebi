@@ -1,5 +1,7 @@
 'use client';
 
+import React from 'react';
+
 import { Button } from '@/components/ui/button';
 import {
 	DropdownMenu,
@@ -15,7 +17,7 @@ interface BreadcrumbNavProps {
 	onNavigate: (path: string) => void;
 }
 
-const MAX_PATH_LIMIT = 4;
+const MAX_PATH_LIMIT = 3;
 
 export function BreadcrumbNav({
 	currentPath,
