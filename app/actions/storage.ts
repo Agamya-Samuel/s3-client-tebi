@@ -260,17 +260,25 @@ export async function createFolder(path: string): Promise<UploadResponse> {
 
 export async function getFileUrl(key: string): Promise<string> {
 	try {
+		// Check if the file is public
+		const { isPublic } = await getFilePermissions(key);
+
+		if (isPublic) {
+			// For public files, return a direct URL
+			return `${process.env.TEBI_ENDPOINT}/${BUCKET_NAME}/${key}`;
+		}
+
+		// For private files, generate a presigned URL that expires in 1 hour
 		const command = new GetObjectCommand({
 			Bucket: BUCKET_NAME,
 			Key: key,
 		});
 
-		// Generate a presigned URL that expires in 1 hour
 		const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 		return url;
 	} catch (error) {
-		console.error('Error generating download URL:', error);
-		throw new Error('Failed to generate download URL');
+		console.error('Error generating file URL:', error);
+		throw new Error('Failed to generate file URL');
 	}
 }
 

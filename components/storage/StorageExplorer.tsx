@@ -37,7 +37,7 @@ import * as storageActions from '@/app/actions/storage';
 import { uploadFile } from '@/app/actions/storage';
 import { FileViewer } from './FileViewer';
 import { cn } from '@/lib/utils';
-import { AutoClosingToast } from '@/components/ui/auto-closing-toast';
+
 import { useRouter } from 'next/navigation';
 import {
 	Dialog,
@@ -78,12 +78,6 @@ interface ItemMenuProps {
 	onRename: (item: StorageItem) => void;
 	onPermissionChange: (item: StorageItem, isPublic: boolean) => Promise<void>;
 	isDeletingItem: string | null;
-	showToast: (props: {
-		title: string;
-		description?: string;
-		variant?: 'default' | 'destructive';
-		duration?: number;
-	}) => void;
 }
 
 function ItemMenu({
@@ -93,23 +87,13 @@ function ItemMenu({
 	onRename,
 	onPermissionChange,
 	isDeletingItem,
-	showToast,
 }: ItemMenuProps) {
 	const [isUpdatingPermission, setIsUpdatingPermission] = useState(false);
 
-	const handlePermissionChange = async (isPublic: boolean) => {
+	const handlePermissionChange = async () => {
+		setIsUpdatingPermission(true);
 		try {
-			setIsUpdatingPermission(true);
-			await onPermissionChange(item, isPublic);
-		} catch (error) {
-			showToast({
-				title: 'Error',
-				description: `Failed to update permission: ${
-					error instanceof Error ? error.message : 'Unknown error'
-				}`,
-				variant: 'destructive',
-				duration: 5000,
-			});
+			await onPermissionChange(item, !item.isPublic);
 		} finally {
 			setIsUpdatingPermission(false);
 		}
@@ -148,9 +132,9 @@ function ItemMenu({
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem
-							onClick={(e) => {
+							onClick={async (e) => {
 								e.stopPropagation();
-								handlePermissionChange(!item.isPublic);
+								await handlePermissionChange();
 							}}
 							className="text-blue-600"
 							disabled={isUpdatingPermission}
@@ -221,35 +205,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 	);
 	const { toast } = useToast();
 
-	const showToast = useCallback(
-		(props: {
-			title: string;
-			description?: string;
-			variant?: 'default' | 'destructive';
-			duration?: number;
-		}) => {
-			toast({
-				title: props.title,
-				description: props.description,
-				variant: props.variant,
-				duration: props.duration,
-				onOpenChange: (open) => {
-					const toastElement = (
-						<AutoClosingToast
-							title={props.title}
-							description={props.description}
-							variant={props.variant}
-							duration={props.duration}
-							onOpenChange={(isOpen) => !isOpen && open}
-						/>
-					);
-					return toastElement;
-				},
-			});
-		},
-		[toast]
-	);
-
 	const loadItems = useCallback(
 		async (path: string) => {
 			try {
@@ -267,75 +222,88 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 								.filter(Boolean)
 								.join('/')}`;
 				router.replace(urlPath, { scroll: false });
-			} catch (error) {
-				showToast({
+			} catch (error: unknown) {
+				toast({
 					title: 'Error',
-					description: `Failed to load items: ${error}`,
+					description:
+						error instanceof Error
+							? error.message
+							: 'Failed to load items',
 					variant: 'destructive',
-					duration: 5000,
 				});
 			} finally {
 				setLoading(false);
 			}
 		},
-		[router, showToast]
+		[router, toast]
 	);
 
-	const handleFileDrop = async (files: File[]) => {
-		try {
-			setIsUploading(true);
-			setUploadProgresses(
-				files.map((file) => ({ fileName: file.name, progress: 0 }))
-			);
-
-			for (let i = 0; i < files.length; i++) {
-				const file = files[i];
-				try {
-					const key = currentPath
-						? `${currentPath}${file.name}`
-						: file.name;
-					await uploadFile(file, key);
-
-					// Update progress for this file to 100%
-					setUploadProgresses((prev) =>
-						prev.map((p, idx) =>
-							idx === i ? { ...p, progress: 100 } : p
-						)
-					);
-				} catch (error) {
-					toast({
-						title: 'Error',
-						description: `Failed to upload ${file.name}`,
-						variant: 'destructive',
-					});
-				}
-			}
-
-			await refreshItems();
-			toast({
-				title: 'Success',
-				description: 'Files uploaded successfully',
-			});
-		} catch (error) {
-			toast({
-				title: 'Error',
-				description: 'Failed to upload files',
-				variant: 'destructive',
-			});
-		} finally {
-			setIsUploading(false);
-			setUploadProgresses([]);
-		}
-	};
-
-	const refreshItems = async () => {
+	const refreshItems = useCallback(async () => {
 		try {
 			const response = await storageActions.listItems(currentPath);
 			setItems(sortItems(response.items));
 		} catch (error) {
 			console.error('Error refreshing items:', error);
 		}
-	};
+	}, [currentPath]);
+
+	const handleFileDrop = useCallback(
+		async (files: File[], targetFolder?: string) => {
+			try {
+				setIsUploading(true);
+				setUploadProgresses(
+					files.map((file) => ({ fileName: file.name, progress: 0 }))
+				);
+
+				for (let i = 0; i < files.length; i++) {
+					const file = files[i];
+					try {
+						const key = targetFolder
+							? `${targetFolder}${file.name}`
+							: currentPath
+							? `${currentPath}${file.name}`
+							: file.name;
+						await uploadFile(file, key);
+
+						// Update progress for this file to 100%
+						setUploadProgresses((prev) =>
+							prev.map((p, idx) =>
+								idx === i ? { ...p, progress: 100 } : p
+							)
+						);
+					} catch (error: unknown) {
+						toast({
+							title: 'Error',
+							description:
+								error instanceof Error
+									? error.message
+									: `Failed to upload ${file.name}`,
+							variant: 'destructive',
+						});
+					}
+				}
+
+				await refreshItems();
+				toast({
+					title: 'Success',
+					description: 'Files uploaded successfully',
+				});
+			} catch (error: unknown) {
+				toast({
+					title: 'Error',
+					description:
+						error instanceof Error
+							? error.message
+							: 'Failed to upload files',
+					variant: 'destructive',
+				});
+			} finally {
+				setIsUploading(false);
+				setUploadProgresses([]);
+			}
+		},
+		[currentPath, refreshItems, setIsUploading, setUploadProgresses, toast]
+	);
 
 	const onDrop = useCallback(
 		(acceptedFiles: File[]) => {
@@ -371,21 +339,22 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			const response = await storageActions.deleteItem(item.Key);
 
 			if (response.success) {
-				showToast({
+				toast({
 					title: 'Success',
 					description: 'Item deleted successfully',
-					duration: 3000,
 				});
 			}
 		} catch (error) {
 			// Revert optimistic update on error
 			const updatedList = await storageActions.listItems(currentPath);
 			setItems(sortItems(updatedList.items));
-			showToast({
+			toast({
 				title: 'Error',
-				description: `Failed to delete item: ${error}`,
+				description:
+					error instanceof Error
+						? error.message
+						: 'Failed to delete item',
 				variant: 'destructive',
-				duration: 5000,
 			});
 		} finally {
 			setIsDeletingItem(null);
@@ -411,10 +380,9 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			const response = await storageActions.createFolder(newFolderPath);
 
 			if (response.success) {
-				showToast({
+				toast({
 					title: 'Success',
 					description: 'Folder created successfully',
-					duration: 3000,
 				});
 				setNewFolderName('');
 				setIsNewFolderDialogOpen(false);
@@ -423,11 +391,13 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			// Revert optimistic update on error
 			const updatedList = await storageActions.listItems(currentPath);
 			setItems(sortItems(updatedList.items));
-			showToast({
+			toast({
 				title: 'Error',
-				description: `Failed to create folder: ${error}`,
+				description:
+					error instanceof Error
+						? error.message
+						: 'Failed to create folder',
 				variant: 'destructive',
-				duration: 5000,
 			});
 		} finally {
 			setIsCreatingFolder(false);
@@ -591,7 +561,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			const response = await storageActions.renameItem(oldPath, newPath);
 
 			if (response.success) {
-				showToast({
+				toast({
 					title: 'Success',
 					description: 'Item renamed successfully',
 					duration: 3000,
@@ -604,7 +574,7 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 			// Revert optimistic update on error
 			const updatedList = await storageActions.listItems(currentPath);
 			setItems(sortItems(updatedList.items));
-			showToast({
+			toast({
 				title: 'Error',
 				description: `Failed to rename item: ${
 					error instanceof Error ? error.message : 'Unknown error'
@@ -628,11 +598,11 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 		item: StorageItem,
 		isPublic: boolean
 	) => {
-		const response = await storageActions.setFilePermission(
-			item.Key,
-			isPublic
-		);
-		if (response.success) {
+		try {
+			const response = await storageActions.setFilePermission(
+				item.Key,
+				isPublic
+			);
 			setItems((prev) =>
 				prev.map((i) =>
 					i.Key === item.Key
@@ -640,10 +610,48 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 						: i
 				)
 			);
-			showToast({
+			toast({
 				title: 'Success',
 				description: response.message,
-				duration: 3000,
+			});
+		} catch (error) {
+			toast({
+				title: 'Error',
+				description:
+					error instanceof Error
+						? error.message
+						: 'Failed to update file access',
+				variant: 'destructive',
+			});
+		}
+	};
+
+	const handleToggleAccess = async (item: StorageItem) => {
+		try {
+			const response = await storageActions.setFilePermission(
+				item.Key,
+				!item.isPublic
+			);
+			// Update the item in the list
+			setItems((prev) =>
+				prev.map((i) =>
+					i.Key === item.Key
+						? { ...i, isPublic: response.isPublic }
+						: i
+				)
+			);
+			toast({
+				title: 'Success',
+				description: response.message,
+			});
+		} catch (error) {
+			toast({
+				title: 'Error',
+				description:
+					error instanceof Error
+						? error.message
+						: 'Failed to update file access',
+				variant: 'destructive',
 			});
 		}
 	};
@@ -712,6 +720,33 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 										{formatFileSize(item.Size)}
 									</span>
 								)}
+								<div className="flex-1 min-w-[100px]">
+									{item.Type === 'file' && (
+										<Button
+											variant="ghost"
+											size="sm"
+											className="gap-2"
+											onClick={(e) => {
+												e.stopPropagation();
+												handleToggleAccess(item);
+											}}
+										>
+											{item.isPublic ? (
+												<>
+													<Globe2 className="h-4 w-4 text-green-600" />
+													<span className="text-green-600">
+														Public
+													</span>
+												</>
+											) : (
+												<>
+													<Lock className="h-4 w-4 text-gray-600" />
+													<span>Private</span>
+												</>
+											)}
+										</Button>
+									)}
+								</div>
 								<ItemMenu
 									item={item}
 									onView={setSelectedFile}
@@ -719,7 +754,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 									onRename={handleItemRename}
 									onPermissionChange={handlePermissionChange}
 									isDeletingItem={isDeletingItem}
-									showToast={showToast}
 								/>
 							</div>
 						</Card>
@@ -836,7 +870,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 												handlePermissionChange
 											}
 											isDeletingItem={isDeletingItem}
-											showToast={showToast}
 										/>
 									</td>
 								</tr>
@@ -909,7 +942,6 @@ export function StorageExplorer({ initialPath = '' }: StorageExplorerProps) {
 							onRename={handleItemRename}
 							onPermissionChange={handlePermissionChange}
 							isDeletingItem={isDeletingItem}
-							showToast={showToast}
 						/>
 					</Card>
 				))}
