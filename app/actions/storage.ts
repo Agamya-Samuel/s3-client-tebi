@@ -25,6 +25,7 @@ import {
 	ListResponse,
 	PermissionResponse,
 } from '@/types/storage';
+import { sortItems } from '@/utils/storage';
 
 const s3Client = new S3Client({
 	region: process.env.TEBI_REGION || 'global',
@@ -92,7 +93,7 @@ export async function listItems(prefix: string = ''): Promise<ListResponse> {
 		);
 
 		return {
-			items: [...folders, ...files],
+			items: sortItems([...folders, ...files]),
 			prefix,
 		};
 	} catch (error) {
